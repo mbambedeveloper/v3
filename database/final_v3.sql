@@ -1,348 +1,257 @@
--- =====================================================
--- TUMBUHIDE V3 - FINAL PRODUCTION DATABASE SCHEMA
--- =====================================================
--- This script handles both fresh installs and existing databases
--- Run this script in Supabase SQL Editor
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
--- Enable required extensions
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
--- =====================================================
--- STORAGE SETUP
--- =====================================================
-
--- Create storage buckets if they don't exist
-INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES 
-  ('avatars', 'avatars', true, 5242880, ARRAY['image/jpeg', 'image/png', 'image/webp']),
-  ('covers', 'covers', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp'])
-ON CONFLICT (id) DO UPDATE SET
-  public = EXCLUDED.public,
-  file_size_limit = EXCLUDED.file_size_limit,
-  allowed_mime_types = EXCLUDED.allowed_mime_types;
-
--- Storage policies for avatars
-DROP POLICY IF EXISTS "Avatar images are publicly accessible" ON storage.objects;
-DROP POLICY IF EXISTS "Users can upload avatar images" ON storage.objects;
-DROP POLICY IF EXISTS "Users can update their own avatar images" ON storage.objects;
-DROP POLICY IF EXISTS "Users can delete their own avatar images" ON storage.objects;
-
-CREATE POLICY "Avatar images are publicly accessible" ON storage.objects
-  FOR SELECT USING (bucket_id = 'avatars');
-
-CREATE POLICY "Users can upload avatar images" ON storage.objects
-  FOR INSERT WITH CHECK (bucket_id = 'avatars' AND auth.role() = 'authenticated');
-
-CREATE POLICY "Users can update their own avatar images" ON storage.objects
-  FOR UPDATE USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
-
-CREATE POLICY "Users can delete their own avatar images" ON storage.objects
-  FOR DELETE USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
-
--- Storage policies for covers
-DROP POLICY IF EXISTS "Cover images are publicly accessible" ON storage.objects;
-DROP POLICY IF EXISTS "Users can upload cover images" ON storage.objects;
-DROP POLICY IF EXISTS "Users can update their own cover images" ON storage.objects;
-DROP POLICY IF EXISTS "Users can delete their own cover images" ON storage.objects;
-
-CREATE POLICY "Cover images are publicly accessible" ON storage.objects
-  FOR SELECT USING (bucket_id = 'covers');
-
-CREATE POLICY "Users can upload cover images" ON storage.objects
-  FOR INSERT WITH CHECK (bucket_id = 'covers' AND auth.role() = 'authenticated');
-
-CREATE POLICY "Users can update their own cover images" ON storage.objects
-  FOR UPDATE USING (bucket_id = 'covers' AND auth.uid()::text = (storage.foldername(name))[1]);
-
-CREATE POLICY "Users can delete their own cover images" ON storage.objects
-  FOR DELETE USING (bucket_id = 'covers' AND auth.uid()::text = (storage.foldername(name))[1]);
-
--- =====================================================
--- TABLES SETUP
--- =====================================================
-
--- Create invite_codes table
-CREATE TABLE IF NOT EXISTS public.invite_codes (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  code text UNIQUE NOT NULL,
-  plan_type text NOT NULL CHECK (plan_type IN ('basic', 'pro')),
+CREATE TABLE public.analytics (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  event_type text NOT NULL,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  ip_address inet,
+  user_agent text,
+  referrer text,
+  country text,
+  city text,
+  device_type text,
+  browser text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT analytics_pkey PRIMARY KEY (id),
+  CONSTRAINT analytics_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.analytics_usage (
+  id bigint NOT NULL DEFAULT nextval('analytics_usage_id_seq'::regclass),
+  user_id uuid NOT NULL,
+  platform text NOT NULL CHECK (platform = ANY (ARRAY['instagram'::text, 'tiktok'::text])),
+  date date NOT NULL DEFAULT CURRENT_DATE,
+  count integer NOT NULL DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT analytics_usage_pkey PRIMARY KEY (id),
+  CONSTRAINT analytics_usage_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.custom_links (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  title text NOT NULL,
+  description text,
+  url text NOT NULL,
+  icon_url text,
+  is_featured boolean DEFAULT false,
+  status USER-DEFINED DEFAULT 'active'::link_status,
+  click_count integer DEFAULT 0,
+  display_order integer DEFAULT 0,
+  scheduled_at timestamp with time zone,
+  expires_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT custom_links_pkey PRIMARY KEY (id),
+  CONSTRAINT custom_links_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.instagram_analytics (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  user_id uuid NOT NULL UNIQUE,
+  social_link_id uuid,
+  instagram_id text NOT NULL,
+  username text NOT NULL,
+  full_name text,
+  profile_pic_url text,
+  biography text,
+  external_url text,
+  follower_count integer DEFAULT 0,
+  following_count integer DEFAULT 0,
+  media_count integer DEFAULT 0,
+  engagement_rate numeric DEFAULT 0,
+  is_private boolean DEFAULT false,
+  is_verified boolean DEFAULT false,
+  is_business_account boolean DEFAULT false,
+  country text,
+  city text,
+  languages jsonb,
+  topics jsonb,
+  recent_posts jsonb,
+  cached_timestamp bigint,
+  last_post_at bigint,
+  auto_update_enabled boolean DEFAULT true,
+  last_updated timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  saved_username text,
+  CONSTRAINT instagram_analytics_pkey PRIMARY KEY (id),
+  CONSTRAINT instagram_analytics_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id),
+  CONSTRAINT instagram_analytics_social_link_id_fkey FOREIGN KEY (social_link_id) REFERENCES public.social_links(id)
+);
+CREATE TABLE public.invite_codes (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  code text NOT NULL UNIQUE,
+  plan_type text NOT NULL,
   max_uses integer DEFAULT 1,
   current_uses integer DEFAULT 0,
   is_active boolean DEFAULT true,
   expires_at timestamp with time zone,
-  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+  used_by uuid,
+  used_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT invite_codes_pkey PRIMARY KEY (id),
+  CONSTRAINT invite_codes_used_by_fkey FOREIGN KEY (used_by) REFERENCES public.profiles(id)
 );
-
--- Drop existing profiles table if exists and recreate with correct structure
-DROP TABLE IF EXISTS public.profiles CASCADE;
-
 CREATE TABLE public.profiles (
-  id uuid REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
-  username text UNIQUE,
+  id uuid NOT NULL,
+  email text NOT NULL CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'::text),
+  username text CHECK (char_length(username) >= 3),
   full_name text,
-  email text,
   tagline text,
   bio text,
-  birth_year integer,
-  show_age boolean DEFAULT false,
   location text,
   pronouns text,
   avatar_url text,
   cover_url text,
-  plan text DEFAULT 'basic' CHECK (plan IN ('basic', 'pro')),
+  role USER-DEFINED DEFAULT 'content_creator'::user_role,
+  plan USER-DEFINED DEFAULT 'basic'::user_plan,
+  invitation_code text,
+  niche text,
   is_verified boolean DEFAULT false,
+  is_active boolean DEFAULT true,
   profile_views integer DEFAULT 0,
   total_clicks integer DEFAULT 0,
-  invite_code_used text,
-  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  CONSTRAINT username_length CHECK (char_length(username) >= 3 AND char_length(username) <= 30),
-  CONSTRAINT username_format CHECK (username ~ '^[a-zA-Z0-9_]+$'),
-  CONSTRAINT birth_year_valid CHECK (birth_year >= 1900 AND birth_year <= EXTRACT(YEAR FROM CURRENT_DATE))
+  last_active_at timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  birth_year integer,
+  show_age boolean DEFAULT true,
+  CONSTRAINT profiles_pkey PRIMARY KEY (id)
 );
-
--- Create social_links table
-CREATE TABLE IF NOT EXISTS public.social_links (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
-  platform text NOT NULL,
-  username text NOT NULL,
-  url text NOT NULL,
-  followers_count integer DEFAULT 0,
-  is_verified boolean DEFAULT false,
-  display_order integer DEFAULT 0,
-  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  UNIQUE(user_id, platform)
+CREATE TABLE public.rate_limits (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  identifier text NOT NULL,
+  request_count integer DEFAULT 1,
+  window_start timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT rate_limits_pkey PRIMARY KEY (id)
 );
-
--- Create custom_links table
-CREATE TABLE IF NOT EXISTS public.custom_links (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
-  title text NOT NULL,
-  url text NOT NULL,
-  description text,
-  icon text,
-  clicks integer DEFAULT 0,
-  is_active boolean DEFAULT true,
-  display_order integer DEFAULT 0,
-  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
-);
-
--- Create showcase_items table
-CREATE TABLE IF NOT EXISTS public.showcase_items (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+CREATE TABLE public.showcase_items (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
   title text NOT NULL,
   description text,
-  media_type text NOT NULL CHECK (media_type IN ('video', 'image')),
-  media_url text NOT NULL,
+  video_url text NOT NULL,
   thumbnail_url text,
-  platform text,
-  external_url text,
-  views integer DEFAULT 0,
-  likes integer DEFAULT 0,
+  platform text NOT NULL,
+  view_count integer DEFAULT 0,
+  like_count integer DEFAULT 0,
+  click_count integer DEFAULT 0,
   is_featured boolean DEFAULT false,
   display_order integer DEFAULT 0,
-  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT showcase_items_pkey PRIMARY KEY (id),
+  CONSTRAINT showcase_items_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id)
 );
-
--- Create analytics_events table
-CREATE TABLE IF NOT EXISTS public.analytics_events (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
-  event_type text NOT NULL,
-  event_data jsonb,
-  ip_address inet,
-  user_agent text,
-  referrer text,
-  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+CREATE TABLE public.social_followers_history (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  social_link_id uuid NOT NULL,
+  follower_count integer NOT NULL,
+  scraped_at timestamp with time zone DEFAULT now(),
+  source text DEFAULT 'manual'::text,
+  CONSTRAINT social_followers_history_pkey PRIMARY KEY (id),
+  CONSTRAINT social_followers_history_social_link_id_fkey FOREIGN KEY (social_link_id) REFERENCES public.social_links(id)
 );
-
--- Create followers_history table
-CREATE TABLE IF NOT EXISTS public.followers_history (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  social_link_id uuid REFERENCES public.social_links(id) ON DELETE CASCADE NOT NULL,
-  followers_count integer NOT NULL,
-  recorded_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+CREATE TABLE public.social_links (
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
+  user_id uuid NOT NULL,
+  platform text NOT NULL,
+  username text,
+  url text NOT NULL,
+  follower_count integer DEFAULT 0,
+  followers_count integer DEFAULT 0,
+  following_count integer DEFAULT 0,
+  media_count integer DEFAULT 0,
+  engagement_rate numeric DEFAULT 0,
+  is_featured boolean DEFAULT false,
+  is_verified boolean DEFAULT false,
+  status USER-DEFINED DEFAULT 'active'::link_status,
+  click_count integer DEFAULT 0,
+  display_order integer DEFAULT 0,
+  platform_icon text,
+  custom_platform_name text,
+  auto_followers boolean DEFAULT false,
+  scrape_enabled boolean DEFAULT true,
+  last_scraped_at timestamp with time zone,
+  api_data jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT social_links_pkey PRIMARY KEY (id),
+  CONSTRAINT social_links_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id)
 );
-
--- =====================================================
--- INDEXES FOR PERFORMANCE
--- =====================================================
-
-CREATE INDEX IF NOT EXISTS idx_profiles_username ON public.profiles(username);
-CREATE INDEX IF NOT EXISTS idx_profiles_plan ON public.profiles(plan);
-CREATE INDEX IF NOT EXISTS idx_social_links_user_id ON public.social_links(user_id);
-CREATE INDEX IF NOT EXISTS idx_social_links_platform ON public.social_links(platform);
-CREATE INDEX IF NOT EXISTS idx_custom_links_user_id ON public.custom_links(user_id);
-CREATE INDEX IF NOT EXISTS idx_custom_links_active ON public.custom_links(user_id, is_active);
-CREATE INDEX IF NOT EXISTS idx_showcase_user_id ON public.showcase_items(user_id);
-CREATE INDEX IF NOT EXISTS idx_showcase_featured ON public.showcase_items(user_id, is_featured);
-CREATE INDEX IF NOT EXISTS idx_analytics_user_id ON public.analytics_events(user_id);
-CREATE INDEX IF NOT EXISTS idx_analytics_event_type ON public.analytics_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON public.analytics_events(created_at);
-CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON public.invite_codes(code);
-CREATE INDEX IF NOT EXISTS idx_invite_codes_active ON public.invite_codes(is_active);
-
--- =====================================================
--- ROW LEVEL SECURITY POLICIES
--- =====================================================
-
--- Enable RLS on all tables
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.social_links ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.custom_links ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.showcase_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.analytics_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.followers_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.invite_codes ENABLE ROW LEVEL SECURITY;
-
--- Drop existing policies to avoid conflicts
-DROP POLICY IF EXISTS "Public profiles are viewable by everyone" ON public.profiles;
-DROP POLICY IF EXISTS "Users can insert their own profile" ON public.profiles;
-DROP POLICY IF EXISTS "Users can update their own profile" ON public.profiles;
-DROP POLICY IF EXISTS "Users can delete their own profile" ON public.profiles;
-
--- Profiles policies
-CREATE POLICY "Public profiles are viewable by everyone" ON public.profiles
-  FOR SELECT USING (true);
-
-CREATE POLICY "Users can insert their own profile" ON public.profiles
-  FOR INSERT WITH CHECK (auth.uid() = id);
-
-CREATE POLICY "Users can update their own profile" ON public.profiles
-  FOR UPDATE USING (auth.uid() = id);
-
-CREATE POLICY "Users can delete their own profile" ON public.profiles
-  FOR DELETE USING (auth.uid() = id);
-
--- Social links policies
-DROP POLICY IF EXISTS "Social links are viewable by everyone" ON public.social_links;
-DROP POLICY IF EXISTS "Users can manage their own social links" ON public.social_links;
-
-CREATE POLICY "Social links are viewable by everyone" ON public.social_links
-  FOR SELECT USING (true);
-
-CREATE POLICY "Users can manage their own social links" ON public.social_links
-  FOR ALL USING (auth.uid() = user_id);
-
--- Custom links policies
-DROP POLICY IF EXISTS "Custom links are viewable by everyone" ON public.custom_links;
-DROP POLICY IF EXISTS "Users can manage their own custom links" ON public.custom_links;
-
-CREATE POLICY "Custom links are viewable by everyone" ON public.custom_links
-  FOR SELECT USING (true);
-
-CREATE POLICY "Users can manage their own custom links" ON public.custom_links
-  FOR ALL USING (auth.uid() = user_id);
-
--- Showcase items policies
-DROP POLICY IF EXISTS "Showcase items are viewable by everyone" ON public.showcase_items;
-DROP POLICY IF EXISTS "Users can manage their own showcase items" ON public.showcase_items;
-
-CREATE POLICY "Showcase items are viewable by everyone" ON public.showcase_items
-  FOR SELECT USING (true);
-
-CREATE POLICY "Users can manage their own showcase items" ON public.showcase_items
-  FOR ALL USING (auth.uid() = user_id);
-
--- Analytics policies
-DROP POLICY IF EXISTS "Analytics events can be inserted by authenticated users" ON public.analytics_events;
-DROP POLICY IF EXISTS "Users can view their own analytics" ON public.analytics_events;
-
-CREATE POLICY "Analytics events can be inserted by authenticated users" ON public.analytics_events
-  FOR INSERT WITH CHECK (auth.role() = 'authenticated');
-
-CREATE POLICY "Users can view their own analytics" ON public.analytics_events
-  FOR SELECT USING (auth.uid() = user_id);
-
--- Followers history policies
-DROP POLICY IF EXISTS "Followers history is viewable by everyone" ON public.followers_history;
-DROP POLICY IF EXISTS "System can manage followers history" ON public.followers_history;
-
-CREATE POLICY "Followers history is viewable by everyone" ON public.followers_history
-  FOR SELECT USING (true);
-
-CREATE POLICY "System can manage followers history" ON public.followers_history
-  FOR ALL USING (auth.role() = 'authenticated');
-
--- Invite codes policies
-DROP POLICY IF EXISTS "Invite codes are viewable by everyone" ON public.invite_codes;
-
-CREATE POLICY "Invite codes are viewable by everyone" ON public.invite_codes
-  FOR SELECT USING (is_active = true);
-
--- =====================================================
--- TRIGGERS FOR UPDATED_AT
--- =====================================================
-
--- Function to update updated_at timestamp
-CREATE OR REPLACE FUNCTION public.handle_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = timezone('utc'::text, now());
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Create triggers for updated_at
-DROP TRIGGER IF EXISTS handle_updated_at ON public.profiles;
-DROP TRIGGER IF EXISTS handle_updated_at ON public.social_links;
-DROP TRIGGER IF EXISTS handle_updated_at ON public.custom_links;
-DROP TRIGGER IF EXISTS handle_updated_at ON public.showcase_items;
-DROP TRIGGER IF EXISTS handle_updated_at ON public.invite_codes;
-
-CREATE TRIGGER handle_updated_at BEFORE UPDATE ON public.profiles
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
-CREATE TRIGGER handle_updated_at BEFORE UPDATE ON public.social_links
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
-CREATE TRIGGER handle_updated_at BEFORE UPDATE ON public.custom_links
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
-CREATE TRIGGER handle_updated_at BEFORE UPDATE ON public.showcase_items
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
-CREATE TRIGGER handle_updated_at BEFORE UPDATE ON public.invite_codes
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
--- =====================================================
--- SAMPLE DATA
--- =====================================================
-
--- Insert sample invite codes
-INSERT INTO public.invite_codes (code, plan_type, max_uses, is_active, expires_at) VALUES
-  ('WELCOME2024', 'basic', 1000, true, '2025-12-31 23:59:59+00'),
-  ('CREATOR2024', 'pro', 500, true, '2025-12-31 23:59:59+00'),
-  ('TUMBUHIDE2024', 'pro', 100, true, '2025-06-30 23:59:59+00'),
-  ('BETA2024', 'basic', 2000, true, '2025-12-31 23:59:59+00'),
-  ('INFLUENCER2024', 'pro', 300, true, '2025-12-31 23:59:59+00')
-ON CONFLICT (code) DO UPDATE SET
-  plan_type = EXCLUDED.plan_type,
-  max_uses = EXCLUDED.max_uses,
-  is_active = EXCLUDED.is_active,
-  expires_at = EXCLUDED.expires_at;
-
--- =====================================================
--- COMPLETION MESSAGE
--- =====================================================
-
-DO $$
-BEGIN
-  RAISE NOTICE '==============================================';
-  RAISE NOTICE 'TUMBUHIDE V3 DATABASE SETUP COMPLETED!';
-  RAISE NOTICE '==============================================';
-  RAISE NOTICE 'Tables created with correct column names';
-  RAISE NOTICE 'Storage buckets: avatars, covers';
-  RAISE NOTICE 'Sample invite codes: WELCOME2024, CREATOR2024, TUMBUHIDE2024';
-  RAISE NOTICE 'All RLS policies and triggers are active';
-  RAISE NOTICE 'Database is ready for production!';
-  RAISE NOTICE '==============================================';
-END $$;
+CREATE TABLE public.tiktok_analytics (
+  id bigint NOT NULL DEFAULT nextval('tiktok_analytics_id_seq'::regclass),
+  user_id uuid NOT NULL UNIQUE,
+  saved_username text,
+  tiktok_uid text NOT NULL,
+  unique_id text,
+  nickname text,
+  avatar text,
+  follower_count bigint DEFAULT 0,
+  region text,
+  region_name text,
+  signature text,
+  verify_type text DEFAULT '0'::text,
+  account_type text DEFAULT '0'::text,
+  category_name text,
+  category_id text,
+  first_video_time text,
+  show_shop_tab integer DEFAULT 0,
+  is_shop_author integer DEFAULT 0,
+  live_type integer DEFAULT 0,
+  follower_count_show text,
+  follower_28_count bigint,
+  follower_28_count_show text,
+  follower_28_last_count bigint,
+  follower_28_count_rate text,
+  region_rank bigint,
+  region_rank_show text,
+  last_region_rank bigint,
+  region_rank_rate text,
+  category_rank bigint,
+  category_rank_show text,
+  last_category_rank bigint,
+  category_rank_rate text,
+  flow_index bigint,
+  carry_index bigint,
+  aweme_28_count bigint,
+  aweme_28_count_show text,
+  live_28_count bigint,
+  live_28_count_show text,
+  last_video_time text,
+  video_28_avg_play_count bigint,
+  video_28_avg_play_count_show text,
+  video_28_avg_interaction_count bigint,
+  video_28_avg_interaction_count_show text,
+  goods_28_avg_sole_count bigint,
+  goods_28_avg_sole_count_show text,
+  goods_28_avg_sale_amount numeric,
+  live_28_avg_sold_count bigint,
+  live_28_avg_sold_count_show text,
+  live_28_avg_sale_amount numeric,
+  analysis_step integer DEFAULT 0,
+  analysis_status text DEFAULT 'pending'::text,
+  auto_update_enabled boolean DEFAULT true,
+  last_updated timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  follower_count_basic bigint DEFAULT 0,
+  region_basic text DEFAULT ''::text,
+  region_name_basic text DEFAULT ''::text,
+  CONSTRAINT tiktok_analytics_pkey PRIMARY KEY (id),
+  CONSTRAINT tiktok_analytics_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.user_subscriptions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  plan USER-DEFINED NOT NULL,
+  started_at timestamp with time zone DEFAULT now(),
+  expires_at timestamp with time zone,
+  is_active boolean DEFAULT true,
+  invitation_code_used text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT user_subscriptions_pkey PRIMARY KEY (id),
+  CONSTRAINT user_subscriptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id)
+);
